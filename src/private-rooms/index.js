@@ -1,5 +1,5 @@
 import { createRoomHost } from './host.js';
-import { createRoomId, isPrivateRoomId, parseRoomCode } from './ids.js';
+import { createRoomId, inviteLink, isPrivateRoomId, parseRoomCode } from './ids.js';
 import { commandReply } from './commands.js';
 import { CLOSE, DEFAULT_MAX_PLAYERS, MAX_ROOM_PLAYERS, ROOM_TEXTS, catalogEntry, createRoomControlReader, decodeControl, isGuestName, isMaxPlayers, isPlayerName, isRoomName, isUuid, normalizeRoomName, rankTable, roomNameProblem } from './protocol.js';
 import { createClosedSocket, createLoopbackPair, createPeerSocket, listenRoom } from './socket.js';
@@ -724,6 +724,8 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
       return id ? join(id) : Promise.reject(new Error(BAD_CODE));
     },
     roomInfo: id => known.get(id) ?? directory.get(id) ?? null,
+    // The message a friend invited to this room is sent: the site doesn't deliver invites to community rooms.
+    inviteMessage: id => isPrivateRoomId(id) ? `Join my room: ${inviteLink(id)}` : null,
     roomName: () => hosted?.room.state.name ?? chosenName ?? roomName(),
     async rename(value) {
       value = normalizeRoomName(value);

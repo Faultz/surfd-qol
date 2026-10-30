@@ -230,8 +230,10 @@ const officialNames={eu:{name:"Surfd EU"}},roomLabel=id=>officialNames[id]?.name
 let nativeRoomId=null,joinedState=false,menuKey="",wasJoined=false,wasVisible=false;
 const nativeMenu={hidden:false},nativeLoading={isOpen:()=>false},nativeBackdrop={setActive(){}};
 const nativePresence=[],nativeInvites=[],nativeToasts=[],nativeReplies=[],nativeQueries=[],nativeJoins=[];
-const friendStore={entries:[],friends(){return this.entries},setPresence(value){nativePresence.push(value)},
-  invite(userId,roomId){nativeInvites.push({userId,roomId})}};
+const friendStore={entries:[],sent:[],friends(){return this.entries},setPresence(value){nativePresence.push(value)},
+  invite(userId,roomId){nativeInvites.push({userId,roomId})},send(userId,text){this.sent.push({userId,text})}};
+const messageEscape=value=>String(value).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;");
+function threadItems(messages){return messages.map(item=>{const mine=item.from==="me";return \`<li class="\${mine?"mine":""}" data-id="\${messageEscape(item.id)}">\${messageEscape(item.text)}<span class="msg-meta"></span></li>\`}).join("")}
 class NativeNotifications {
   noteOf(note){const name=officialNames[note.roomId??"eu"]?.name??"Surfd EU",text=note.kind==="invite"?"invited you to "+name+".":"";return {...note,text}}
 }
@@ -369,7 +371,7 @@ function roomFixture(privateRooms, source = roomSource) {
       native:{friends:friendCallbacks,profile:profileCallbacks,presence:friendPresence,accept:acceptNativeInvite,
         notes:new NativeNotifications(),friendStore,nativePresence,nativeInvites,nativeToasts,nativeReplies,nativeQueries,nativeJoins,
         command:nativeCommand,setRoom:id=>{nativeRoomId=id;joinedState=!!id;chatRoom=id?{roomId:id,status:"connected",playtime:true}:null},
-        results:nativeResults,announceResult,client,
+        results:nativeResults,announceResult,client,threadItems,
         finish:ticket=>{rankedTicket=ticket?{ticket:{id:ticket}}:null;return nativeFinish({},true)},
         menu:open=>{nativeMenu.hidden=!open;nativeFrame()},frame:nativeFrame,label:roomLabel},
       ui:{serverMenu,serverMenuAction,page:document,lobby,enter:room=>{activeRoom=room},soloResets:()=>soloResets},
@@ -906,6 +908,32 @@ describe('native community behavior integration', () => {
     native.friends.invite({userId: 'friend', name: 'Friend'});
     expect(native.nativeInvites.at(-1)).toEqual({userId: 'friend', roomId: 'eu'});
     expect(native.nativeToasts).toEqual(['Invited Friend']);
+  });
+
+  test('a friend invited to a community room is also sent its invite link, which their messages show as Join', () => {
+    const link = id => `https://surfd.net/?join=${id}`;
+    const fixture = roomFixture(socialHooks({inviteMessage: id => `Join my room: ${link(id)}`}));
+    const native = fixture.runtime.native;
+    native.setRoom(communityId);
+    native.friends.invite({userId: 'friend', name: 'Friend'});
+    expect(native.nativeInvites).toEqual([{userId: 'friend', roomId: communityId}]);
+    expect(native.friendStore.sent).toEqual([{userId: 'friend', text: `Join my room: ${link(communityId)}`}]);
+    expect(native.nativeToasts).toEqual(['Invited Friend to your room.']);
+    // Official servers keep the site's invite alone.
+    native.setRoom('eu');
+    native.friends.invite({userId: 'friend', name: 'Friend'});
+    expect(native.friendStore.sent).toHaveLength(1);
+    const html = native.threadItems([{id: '1', from: 'Friend', text: `Join my room: ${link(communityId)}`}, {id: '2', from: 'me', text: '<b>hi</b>'}]);
+    expect(html).toContain(`Join my room: <button type="button" class="btn small btn-primary" data-qol-join="${communityId}">Join room</button>`);
+    expect(html).toContain('&lt;b&gt;hi&lt;/b&gt;');
+    expect(fixture.warnings).toEqual([]);
+  });
+  test('a changed message list leaves friend invites and the rest of the room hooks working', () => {
+    const warnings = [], originalWarn = console.warn;
+    console.warn = (...args) => warnings.push(args.join(' '));
+    try { instrumentGame(roomSource.replace('data-id="${messageEscape(item.id)}"', 'data-key="${messageEscape(item.id)}"')); }
+    finally { console.warn = originalWarn; }
+    expect(warnings).toEqual([expect.stringContaining('Room invites in friend messages unavailable:')]);
   });
 
   test('preserves server-controlled presence instead of publishing private IDs', () => {

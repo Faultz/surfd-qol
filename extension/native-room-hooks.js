@@ -26,6 +26,11 @@ export function nativeRoomHooks(source, hook, lobby) {
     console.warn('[Surfd QoL] Native community friends unavailable:', error.message);
   }
   try {
+    source = messageHooks(source);
+  } catch (error) {
+    console.warn('[Surfd QoL] Room invites in friend messages unavailable:', error.message);
+  }
+  try {
     const reply = unique(source, new RegExp(`(${identifier})\\("Use /vote followed by one of the displayed numbers\\."\\)`, 'g'), 'native command reply')[1];
     const command = unique(source, new RegExp(`function (${identifier})\\((${identifier})\\)\\{const\\[(${identifier}),\\.\\.\\.(${identifier})\\]=\\2\\.trim\\(\\)\\.split\\(/\\\\s\\+/\\),(${identifier})=\\4\\.join\\(" "\\),(${identifier})=\\3\\.replace\\(/\\^\\[!/\\]/,""\\)\\.toLowerCase\\(\\);if\\(\\6==="played"\\)\\{if\\((${identifier})\\?\\.status==="connected"&&!\\7\\.playtime\\)`, 'g'), 'native command entry');
     const entry = `function ${command[1]}(${command[2]}){`;
@@ -59,6 +64,17 @@ function resultHooks(source, lobby) {
   return source.replace(call[0], () => `${formatter[1]}(${call[1]},${community(`${native}?.roomId()`)}),"result",${call[1]}.name,${call[1]}.rank`);
 }
 
+// A friend message carrying a room's invite link gets a Join button in place
+// of the link. Messages are otherwise the game's own escaped text.
+function messageHooks(source) {
+  const item = unique(source, new RegExp(`<li class="\\$\\{(${identifier})\\?"mine":""\\}" data-id="\\$\\{(${identifier})\\((${identifier})\\.id\\)\\}">\\$\\{\\2\\(\\3\\.text\\)\\}`, 'g'), 'friend message text');
+  source = source.replace(item[0], () => item[0].slice(0, item[0].lastIndexOf('${')) + '${__qolMessage(' + item[3] + '.text,' + item[2] + ')}');
+  return source + `
+function __qolMessage(text,escape){const found=/https:\\/\\/surfd\\.net\\/\\?join=(p-[abcdefghjkmnpqrstuvwxyz23456789]{12})(?![a-z0-9])/.exec(text);if(!found||!globalThis.__SURFD_QOL__?.privateRooms)return escape(text);return escape(text.slice(0,found.index))+'<button type="button" class="btn small btn-primary" data-qol-join="'+found[1]+'">Join room</button>'+escape(text.slice(found.index+found[0].length))}
+typeof document!=="undefined"&&document.addEventListener?.("click",event=>{const button=event.target?.closest?.("[data-qol-join]");if(!button)return;event.preventDefault();event.stopPropagation();globalThis.__SURFD_QOL__?.privateRooms?.joinCode?.(button.dataset.qolJoin)?.catch?.(error=>globalThis.__SURFD_QOL__?.adapter?.rooms?.notice?.(error?.message??"Couldn’t reach the room service. Try again in a moment."))},true);
+`;
+}
+
 function friendHooks(source, hook, lobby) {
   const native = unique(source, new RegExp(`${literal(lobby)}\\.sync\\(\\{joined:${identifier},visible:!${identifier}\\.hidden,roomId:(${identifier})\\?\\.roomId\\(\\)\\?\\?null\\}\\)`, 'g'), 'native friend room')[1];
   const joins = [...source.matchAll(new RegExp(`join:(${identifier})=>\\{(${identifier})\\.close\\(!1\\),(${identifier})\\(\\1\\)\\}`, 'g'))];
@@ -74,7 +90,10 @@ function friendHooks(source, hook, lobby) {
   source = source.replace(roomName[0], () => `roomName:${roomName[1]}=>${community(roomName[1])}?__qolNativeRoomName(${roomName[1]}):${roomName[0].slice(roomName[0].indexOf('=>') + 2)}`);
   source = source.replace(roomMap[0], () => roomMap[0].replace('{', () => `{if(${community(roomMap[1])})return __qolNativeRoomMap(${roomMap[1]});`));
   source = source.replace(profile[0], () => `(${community(`${profile[2]}.roomId`)}?"Playing on "+__qolNativeRoomName(${profile[2]}.roomId)+" · "+__qolNativeRoomMap(${profile[2]}.roomId):${profile[0]})`);
-  source = source.replace(invite[0], () => `invite:${invite[1]}=>{const ${invite[2]}=${native}?.connected()?${native}.roomId():null;if(!${invite[2]}){${invite[6]}.toast("Join a server first, then invite friends to it.");return}if(${community(invite[2])}){${invite[7]}.invite(${invite[1]}.userId,${invite[2]});return}${invite[7]}.invite(${invite[1]}.userId,${invite[2]}),`);
+  // The site accepts an invite to a community room but never delivers it, so
+  // the friend is also sent a message with the room's invite link, which the
+  // extension shows as a Join button (messageHooks).
+  source = source.replace(invite[0], () => `invite:${invite[1]}=>{const ${invite[2]}=${native}?.connected()?${native}.roomId():null;if(!${invite[2]}){${invite[6]}.toast("Join a server first, then invite friends to it.");return}if(${community(invite[2])}){${invite[7]}.invite(${invite[1]}.userId,${invite[2]});const __qolText=${hook}?.inviteMessage?.(${invite[2]});if(typeof __qolText==="string"){${invite[7]}.send(${invite[1]}.userId,__qolText);${invite[6]}.toast("Invited "+${invite[1]}.name+" to your room.")}return}${invite[7]}.invite(${invite[1]}.userId,${invite[2]}),`);
   // Native renders myRoom() as an invite URL without an explicit Copy/Invite action.
   source = source.replace(ownRoom[0], () => `myRoom:()=>{const id=${native}?.connected()?${native}.roomId():null;return ${community('id')}&&${hook}?.roomInfo?.(id)?.visibility!=="public"?null:id}`);
   source = source.replace(note[0], () => `noteOf(${note[1]}){const ${note[2]}=${community(`${note[1]}.roomId`)}?__qolNativeRoomName(${note[1]}.roomId):${note[3]}[${note[1]}.roomId??"eu"]?.name??"Surfd EU"`);
