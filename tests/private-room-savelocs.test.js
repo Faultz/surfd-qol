@@ -62,7 +62,7 @@ describe('shared saveloc authority', () => {
       expect(owner.messages('saveloc-add')[0].entry).toEqual(entry);
       owner.close(1000, 'Left');
       const late = connect();
-      expect(late.sent.map(message => message.type)).toEqual(['welcome', 'saveloc-init', 'saveloc-add']);
+      expect(late.sent.map(message => message.type)).toEqual(['welcome', 'saveloc-init', 'saveloc-add', 'paint-init']);
       expect(late.messages('saveloc-init')[0].count).toBe(1);
       expect(late.messages('saveloc-add')[0].entry).toEqual(entry);
       expect(connect(false, browserId).messages('saveloc-init')[0].ownerId).toBe(ownerId);

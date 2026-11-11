@@ -20,6 +20,10 @@ export const defaults = {
   // Binds change what the game receives, so each one is opt-in.
   crouchJump: false, crouchJumpKey: 'Space',
   nullAD: false, nullWSpace: false,
+  // World paint: hold to mark surfaces, saved per map. Size is the dot radius in units.
+  paint: false, paintKey: 'KeyF', paintEraseKey: 'KeyG', paintColor: '#ff4d4d', paintSize: 4,
+  // In a private room, everyone's paint shows while painting, or when this is on.
+  paintShowRoom: false,
   // Strafe preview: the speed it starts from and whether it strafes on the ground (prestrafe) or in the air.
   strafePreviewUnits: 300, strafePreviewMode: 'ground',
   // Both replay bars drive Surfd's own player.
@@ -43,8 +47,7 @@ const choices = {
   startColorReference: ['fixed', 'pb', 'wr'],
   surfColorReference: ['fixed', 'pb', 'wr'],
   airColorReference: ['fixed', 'pb', 'wr'],
-  strafePreviewMode: ['ground', 'air'],
-  rampMetric: ['surf', 'board', 'angle', 'down', 'up', 'speedIn', 'speedOut'],
+  strafePreviewMode: ['ground', 'air'],  rampMetric: ['surf', 'board', 'angle', 'down', 'up', 'speedIn', 'speedOut'],
 };
 
 // Unknown keys and wrong types are ignored; every accepted value is clamped
@@ -73,7 +76,8 @@ export function applySettings(settings, patch) {
   settings.historyRunsPerMap = Math.round(Math.max(3, Math.min(100, settings.historyRunsPerMap)));
   settings.historyMinSeconds = Math.max(0, Math.min(300, settings.historyMinSeconds));
   settings.strafePreviewUnits = Math.max(1, Math.min(5000, settings.strafePreviewUnits));
-  for (const key of colorKeys) if (!/^#[a-f\d]{6}$/i.test(settings[key])) settings[key] = defaults[key];
+  settings.paintSize = Math.max(1, Math.min(32, settings.paintSize));  for (const key of [...colorKeys, 'paintColor']) if (!/^#[a-f\d]{6}$/i.test(settings[key])) settings[key] = defaults[key];
+  for (const key of ['paintKey', 'paintEraseKey']) if (!settings[key] || settings[key] === 'Escape') settings[key] = defaults[key];
   for (const [key, allowed] of Object.entries(choices)) if (!allowed.includes(settings[key])) settings[key] = defaults[key];
   return settings;
 }

@@ -31,8 +31,10 @@ describe('settings preview', () => {
   test('every setting the panel binds exists, and every default is reachable', () => {
     const bound = new Set([...panelMarkup.matchAll(/data-setting="(\w+)"/g)].map(match => match[1]));
     for (const key of bound) expect(key in defaults).toBe(true);
-    // crouchJumpKey is set through the key-capture button, rampMetric in the Runs panel.
-    for (const key of Object.keys(defaults)) if (key !== 'crouchJumpKey' && key !== 'rampMetric') expect(bound.has(key)).toBe(true);
+    // Keys are set through key-capture buttons, rampMetric in the Runs panel.
+    const captured = new Set([...panelMarkup.matchAll(/data-capture="(\w+)"/g)].map(match => match[1]));
+    for (const key of captured) expect(key in defaults).toBe(true);
+    for (const key of Object.keys(defaults)) if (key !== 'crouchJumpKey' && key !== 'rampMetric' && !captured.has(key)) expect(bound.has(key)).toBe(true);
   });
 
   test('players read touch, never board, in visible text and accessible labels', () => {

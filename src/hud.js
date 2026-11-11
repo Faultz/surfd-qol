@@ -21,7 +21,7 @@ const hex = (value, fallback) => /^#[\da-f]{6}$/i.test(value) ? value : fallback
 const PALETTE = [['speedColor', '--accent'], ['goodColor', '--good'], ['warnColor', '--warn'], ['badColor', '--bad']];
 
 // `services` lets the dev harness replace reference loading with fixtures.
-export function mountHud({getState, getView, getMetrics, getSession, getReferences, getAdapter, settings, onSettings, onResetColors, bindings, history, replays, replayControl, rampReference, strafePreview = null, cinema = null, services = {}}) {
+export function mountHud({getState, getView, getMetrics, getSession, getReferences, getAdapter, settings, onSettings, onResetColors, bindings, history, replays, replayControl, rampReference, strafePreview = null, cinema = null, paint = null, services = {}}) {
   const removeFonts = installFonts();
   const host = document.createElement('div');
   host.id = 'surfd-qol';
@@ -92,7 +92,7 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
     }
   }
   const panel = createSettingsPanel({
-    root, host, settings, bindings, onSettings, strafePreview,
+    root, host, settings, bindings, onSettings, strafePreview, paint,
     onResetColors,
     onResetLayout: () => onSettings({y: defaults.y, scale: defaults.scale, opacity: defaults.opacity}),
     onChange() { syncSettings(); render(); },

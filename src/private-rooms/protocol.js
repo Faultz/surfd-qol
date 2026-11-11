@@ -1,4 +1,5 @@
 import {MAX_ROOM_SAVELOCS, sanitizeSaveloc} from './saveloc-validation.js';
+import {MAX_OWNER_PAINT, MAX_PAINT_BATCH, isEraseRadius, isPaintDot, isPaintPoint} from './room-paint.js';
 
 export const VERSION = 1;
 export const CLOSE = Object.freeze({invalid: 4002, gone: 4004, refused: 4008, congested: 4013});
@@ -293,6 +294,21 @@ export function decodeControl(text) {
       requireValid(identifier(message.mapId) && uint(message.epoch) && message.epoch > 0
         && Number.isSafeInteger(message.id) && message.id > 0, 'Invalid saveloc deletion');
       return {type: 'saveloc-delete', mapId: message.mapId, epoch: message.epoch, id: message.id};
+    case 'paint-add':
+    case 'paint-erase':
+    case 'paint-clear': {
+      requireValid(identifier(message.mapId) && uint(message.epoch) && message.epoch > 0, 'Invalid paint map');
+      const envelope = {type: message.type, mapId: message.mapId, epoch: message.epoch};
+      if (message.type === 'paint-add') {
+        requireValid(paintDots(message.dots, MAX_PAINT_BATCH), 'Invalid paint');
+        return {...envelope, dots: message.dots.map(dot => dot.slice())};
+      }
+      if (message.type === 'paint-erase') {
+        requireValid(isPaintPoint(message.point) && isEraseRadius(message.radius), 'Invalid paint erase');
+        return {...envelope, point: message.point.slice(), radius: message.radius};
+      }
+      return envelope;
+    }
     case 'chat':
       requireValid(typeof message.text === 'string' && message.text.trim().length > 0, 'Invalid chat');
       return {type: 'chat', text: message.text.trim().slice(0, 240)};
@@ -341,6 +357,7 @@ export function controlWireSize(text) {
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const textValue = (value, max, empty = false) => typeof value === 'string' && value.length <= max && (empty || value.trim().length > 0);
 const identifier = value => textValue(value, 256);
+const paintDots = (dots, max) => Array.isArray(dots) && dots.length > 0 && dots.length <= max && dots.every(isPaintDot);
 const timestamp = value => Number.isSafeInteger(value) && value >= 0;
 export const runTime = value => Number.isSafeInteger(value) && value > 0 && value <= 86400000000;
 const isPointsDelta = value => Number.isSafeInteger(value) && value >= 0 && value <= 1e6;
@@ -476,6 +493,26 @@ export function createRoomFilter({roomId, maps = [], ranks = RANKS, host = false
         const snapshot = sanitizeSaveloc(entry.snapshot);
         requireValid(JSON.parse(snapshot.key)[0] === message.mapId, 'Invalid saveloc key');
         return {...envelope, entry: {id: entry.id, ownerId: entry.ownerId, name: entry.name, snapshot}};
+      }
+      case 'paint-init':
+      case 'paint-add':
+      case 'paint-erase':
+      case 'paint-clear': {
+        requireValid(catalog.has(message.mapId) && uint(message.epoch) && message.epoch > 0, 'Invalid paint map');
+        if (!current || message.mapId !== current.mapId || message.epoch !== current.epoch) return null;
+        const envelope = {type: message.type, mapId: message.mapId, epoch: message.epoch};
+        if (message.type === 'paint-clear') {
+          requireValid(message.ownerId === null || isUuid(message.ownerId), 'Invalid paint owner');
+          return {...envelope, ownerId: message.ownerId};
+        }
+        requireValid(isUuid(message.ownerId), 'Invalid paint owner');
+        if (message.type === 'paint-init') return {...envelope, ownerId: message.ownerId};
+        if (message.type === 'paint-erase') {
+          requireValid(isPaintPoint(message.point) && isEraseRadius(message.radius), 'Invalid paint erase');
+          return {...envelope, ownerId: message.ownerId, point: message.point.slice(), radius: message.radius};
+        }
+        requireValid(paintDots(message.dots, MAX_OWNER_PAINT), 'Invalid paint');
+        return {...envelope, ownerId: message.ownerId, dots: message.dots.map(dot => dot.slice())};
       }
       case 'roster':
         return {type: 'roster', players: readPlayers(message.players)};

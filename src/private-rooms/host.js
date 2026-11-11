@@ -1,6 +1,7 @@
 import {isPrivateRoomId} from './ids.js';
 import {maskChat} from './chat-filter.js';
 import {MAX_ROOM_SAVELOCS, SAVELOC_RING, sanitizeSaveloc} from './saveloc-validation.js';
+import {acceptedPaint, appendPaint, erasePaint} from './room-paint.js';
 import {CLOSE, RANKS, ROOM_TEXTS, VERSION, DEFAULT_MAX_PLAYERS, SNAPSHOT_HEADER_BYTES, SNAPSHOT_INTERVAL_MS,
   bannedNotice, catalogEntry, decodeControl, encodeControlFrames, isGuestName, isMaxPlayers, isPlayerName, isPoints, isUuid, kickedNotice,
   isStanding, normalizeAppearance, normalizeRoomName, rankFor, rankTable, relayPose, relaySpectator, roomNameProblem, runTime} from './protocol.js';
@@ -8,6 +9,8 @@ import {CLOSE, RANKS, ROOM_TEXTS, VERSION, DEFAULT_MAX_PLAYERS, SNAPSHOT_HEADER_
 const ROSTER_INTERVAL_MS = 100;
 const CHAT_LIMIT = {rate: 1, burst: 3}, SPECTATE_LIMIT = {rate: 2, burst: 4};
 const SAVELOC_LIMIT = {rate: 1, burst: 3}, COURSE_LIMIT = {rate: 2, burst: 4};
+// Guests send paint in batches of up to 32 dots every 250 ms, and erase at most every 125 ms.
+const PAINT_LIMIT = {rate: 5, burst: 10}, ERASE_LIMIT = {rate: 10, burst: 20};
 // Native allows frames 1ms early at 30Hz. Keep that cadence plus ~259ms of jitter.
 const SPECTATOR_LIMIT = {rate: 1000 / (1000 / 30 - 1), burst: 8};
 const BAN_MS = 60 * 60 * 1000;
@@ -133,6 +136,37 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     owner.entries.push(entry.id);
     savelocs.set(entry.id, {entry, owner});
     broadcast({type: 'saveloc-add', mapId: state.mapId, epoch: state.epoch, entry});
+  }
+  // Paint stays with the browser that drew it, like savelocs, until the map changes.
+  const paintCount = () => { let count = 0; for (const owner of owners.values()) count += owner.paint.length; return count; };
+  function initPaint(client) {
+    send(client, {type: 'paint-init', mapId: state.mapId, epoch: state.epoch, ownerId: client.owner.id});
+    for (const owner of owners.values()) {
+      if (owner.paint.length) send(client, {type: 'paint-add', mapId: state.mapId, epoch: state.epoch, ownerId: owner.id, dots: owner.paint});
+    }
+  }
+  function addPaint(client, message) {
+    const owner = client.owner;
+    if (message.mapId !== state.mapId || message.epoch !== state.epoch || !take(owner.paintBucket, PAINT_LIMIT)) return;
+    const dots = message.dots.slice(0, acceptedPaint(owner.paint.length, paintCount(), message.dots.length));
+    if (!dots.length) return;
+    owner.paint = appendPaint(owner.paint, dots);
+    broadcast({type: 'paint-add', mapId: state.mapId, epoch: state.epoch, ownerId: owner.id, dots});
+  }
+  function erasePaintAt(client, message) {
+    const owner = client.owner;
+    if (message.mapId !== state.mapId || message.epoch !== state.epoch || !take(owner.eraseBucket, ERASE_LIMIT)) return;
+    const kept = erasePaint(owner.paint, message.point, message.radius);
+    if (kept.length === owner.paint.length) return;
+    owner.paint = kept;
+    broadcast({type: 'paint-erase', mapId: state.mapId, epoch: state.epoch, ownerId: owner.id, point: message.point, radius: message.radius});
+  }
+  function clearPaint(owner) {
+    if (owner) {
+      if (!owner.paint.length) return;
+      owner.paint = [];
+    } else for (const each of owners.values()) each.paint = [];
+    broadcast({type: 'paint-clear', mapId: state.mapId, epoch: state.epoch, ownerId: owner?.id ?? null});
   }
   function clearPending() {
     clearTimeout(flushTimer);
@@ -327,6 +361,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     if (action === 'ban') bans.set(target.browserId, now() + BAN_MS);
     target.socket.close(CLOSE.refused, action === 'ban' ? ROOM_TEXTS.banned : ROOM_TEXTS.kicked);
     leave(target);
+    clearPaint(target.owner);
     broadcast({type: 'notice', text: action === 'ban' ? bannedNotice(target.player.name) : kickedNotice(target.player.name)});
   }
   function banned(browserId) {
@@ -375,6 +410,15 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
           if (message.mapId === state.mapId && message.epoch === state.epoch
             && savelocs.get(message.id)?.owner === client.owner) removeSaveloc(message.id);
           break;
+        case 'paint-add':
+          addPaint(client, message);
+          break;
+        case 'paint-erase':
+          erasePaintAt(client, message);
+          break;
+        case 'paint-clear':
+          if (message.mapId === state.mapId && message.epoch === state.epoch) clearPaint(client.host ? null : client.owner);
+          break;
         case 'ping':
           send(client, 'pong');
           break;
@@ -418,7 +462,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
             epochs.delete(state.epoch - EPOCH_HISTORY);
             clearPending();
             savelocs.clear();
-            for (const owner of owners.values()) owner.entries.length = 0;
+            for (const owner of owners.values()) { owner.entries.length = 0; owner.paint = []; }
             // A new map starts everyone on its main course.
             let courses = false;
             for (const peer of clients) {
@@ -429,7 +473,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
             }
             broadcast({type: 'state', state, serverTime: Date.now()});
             if (courses) roster();
-            for (const peer of clients) initSavelocs(peer);
+            for (const peer of clients) { initSavelocs(peer); initPaint(peer); }
             // The native client clears its viewer count on each epoch, not its demand flag.
             for (const peer of clients) demand(peer);
             onChange();
@@ -486,7 +530,8 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     const claimed = !guest && titles.has(hello.rank) && isPoints(hello.points);
     let owner = owners.get(hello.browserId);
     if (!owner) {
-      owner = {id: crypto.randomUUID(), entries: [], bucket: {tokens: SAVELOC_LIMIT.burst, at: now()}};
+      owner = {id: crypto.randomUUID(), entries: [], bucket: {tokens: SAVELOC_LIMIT.burst, at: now()},
+        paint: [], paintBucket: {tokens: PAINT_LIMIT.burst, at: now()}, eraseBucket: {tokens: ERASE_LIMIT.burst, at: now()}};
       owners.set(hello.browserId, owner);
     }
     const client = {socket, host, owner, browserId: hello.browserId, open: false, sequence: null, target: null, request: 0, watchers: new Set(),
@@ -509,6 +554,7 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
         recentResults: [], chatMute: null});
       initSavelocs(client);
       for (const {entry} of savelocs.values()) send(client, {type: 'saveloc-add', mapId: state.mapId, epoch: state.epoch, entry});
+      initPaint(client);
       roster();
     };
     client.onMessage = event => receive(client, event.data);

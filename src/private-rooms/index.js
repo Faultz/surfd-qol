@@ -6,6 +6,7 @@ import { createClosedSocket, createLoopbackPair, createPeerSocket, listenRoom } 
 import { connectSignal, newHostKey, relayServers, SIGNAL_URL } from './signal-client.js';
 import { createRoomUi } from './ui.js';
 import { createSharedSavelocs } from './shared-savelocs.js';
+import { createRoomPaint } from './room-paint.js';
 import { courseOf } from '../courses.js';
 
 const CLOSED = ROOM_TEXTS.closed;
@@ -35,7 +36,7 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
   const sockets = new Map(), latestSockets = new Map();
   const roomStates = new WeakMap();
   let currentSocket = null;
-  let sharedSaves = null;
+  let sharedSaves = null, roomPaint = null;
   let uploadSamples = new WeakMap(), uploadTimer = null, showingDetails = false;
   let hosted = null, ui = null, heartbeat = null, destroyed = false, attached = false, listening = false;
   let lastDirectory = -Infinity, directoryRequest = null, directoryTimer = null, sampling = false;
@@ -362,6 +363,12 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
       notice: text => getAdapter()?.notice?.(text),
     }) : null;
     sharedSaves = shared;
+    roomPaint?.close();
+    const paint = roomPaint = createRoomPaint({
+      timers,
+      send: message => { if (socket === currentSocket && socket.readyState === 1) socket.send(JSON.stringify(message)); },
+      invalid: () => socket.close(CLOSE.invalid, ROOM_TEXTS.invalidData),
+    });
     currentSocket = socket;
     let pingAt = null, opened = false, ownConnectionId = null;
     const incoming = createRoomControlReader();
@@ -392,6 +399,10 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
         if (socket === currentSocket) shared?.receive(message);
         return;
       }
+      if (message.type.startsWith('paint-')) {
+        if (socket === currentSocket) paint.receive(message);
+        return;
+      }
       if (!['welcome', 'state', 'roster'].includes(message.type)) return;
       if (message.type === 'welcome' && ownConnectionId === null && isUuid(message.player?.connectionId)) {
         ownConnectionId = message.player.connectionId;
@@ -406,7 +417,7 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
             getAdapter()?.rooms?.maps().some(map => map.id === state.mapId) &&
             (!accepted || state.epoch > accepted.epoch || state.epoch === accepted.epoch && state.mapId === accepted.mapId)) {
           roomStates.set(socket, {mapId: state.mapId, epoch: state.epoch});
-          if (socket === currentSocket) shared?.state(state);
+          if (socket === currentSocket) { shared?.state(state); paint.state(state); }
         }
       }
       if (ownHost || !previous) return;
@@ -431,6 +442,8 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
         currentSocket = null;
         shared?.close();
         if (sharedSaves === shared) sharedSaves = null;
+        paint.close();
+        if (roomPaint === paint) roomPaint = null;
       }
       if (latestSockets.get(id) !== socket) return;
       latestSockets.delete(id);
@@ -653,6 +666,10 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
   }
   const api = {
     directoryError: () => directoryError,
+    // The current room's paint while connected, for the world paint layer.
+    get paint() { return roomPaint?.ready ? roomPaint : null; },
+    // Whether this browser hosts the room it's in, so its Clear empties the whole room.
+    get hostingCurrent() { return !!currentSocket && sockets.get(currentSocket) === hosted?.id; },
     // Called by the game as it handles each finish: the attempt id it sends for verification, or null.
     finishQueued(id) { queuedRun = typeof id === 'string' ? id : null; },
     async observeFinish(live, history) {
@@ -917,6 +934,8 @@ export function createPrivateRooms({ getAdapter, getState = () => globalThis.__S
       closeHost();
       sharedSaves?.close();
       sharedSaves = null;
+      roomPaint?.close();
+      roomPaint = null;
       forgetRuns();
       destroyed = true;
       directoryAbort?.abort();

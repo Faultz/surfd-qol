@@ -17,6 +17,7 @@ import { createStrafePreview } from './strafe-preview.js';
 import { createCinema } from './cinema.js';
 import {createMapPreparation} from './map-preparation.js';
 import {createEntryTiming} from './entry-timing.js';
+import {createPaint} from './paint.js';
 
 const settings = { ...defaults };
 const applySettings = patch => applySettingsTo(settings, patch);
@@ -97,6 +98,8 @@ const strafePreview = createStrafePreview({getAdapter: () => api.adapter});
 const cinema = createCinema({getAdapter: () => api.adapter, onChange: () => hud?.cinemaChanged?.()});
 const mapPreparation = createMapPreparation();
 const entryTiming = createEntryTiming();
+const paint = createPaint({getAdapter: () => api.adapter, settings,
+  getRoom: () => privateRooms.paint, isHost: () => privateRooms.hostingCurrent});
 let restoreBeginAttempt = null;
 function onSettings(patch) {
   const startWasShown = settings.hud !== false && settings.showStart !== false;
@@ -192,6 +195,7 @@ const api = {
     restoreBeginAttempt?.();
     clearInterval(bindingTimer);
     strafePreview.destroy();
+    paint.destroy();
     cinema.destroy();
     privateRooms.destroy();
     for (const type of SIDE_BUTTON_EVENTS) window.removeEventListener(type, keepSideButtons, true);
@@ -267,7 +271,7 @@ function mount() {
     getSession: () => api.adapter?.getSession() ?? null,
     getReferences: () => api.adapter?.getReferences() ?? null,
     getAdapter: () => api.adapter,
-    settings, onSettings, bindings, history, replays, replayControl, rampReference, strafePreview, cinema,
+    settings, onSettings, bindings, history, replays, replayControl, rampReference, strafePreview, cinema, paint,
     services: { replayStore, strafePreview },
     onResetColors: () => onSettings(Object.fromEntries(colorKeys.map(key => [key, defaults[key]])))
   });
