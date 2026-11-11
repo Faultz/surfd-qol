@@ -9,8 +9,9 @@ import {CLOSE, RANKS, ROOM_TEXTS, VERSION, DEFAULT_MAX_PLAYERS, SNAPSHOT_HEADER_
 const ROSTER_INTERVAL_MS = 100;
 const CHAT_LIMIT = {rate: 1, burst: 3}, SPECTATE_LIMIT = {rate: 2, burst: 4};
 const SAVELOC_LIMIT = {rate: 1, burst: 3}, COURSE_LIMIT = {rate: 2, burst: 4};
-// Guests send paint in batches of up to 32 dots every 250 ms, and erase at most every 125 ms.
-const PAINT_LIMIT = {rate: 5, burst: 10}, ERASE_LIMIT = {rate: 10, burst: 20};
+// Guests send paint at most every 50 ms and erase every 125 ms. Paint is
+// limited by messages and by dots, so a fast stroke is fine but a flood isn't.
+const PAINT_LIMIT = {rate: 25, burst: 50}, PAINT_DOTS = {rate: 200, burst: 400}, ERASE_LIMIT = {rate: 10, burst: 20};
 // Native allows frames 1ms early at 30Hz. Keep that cadence plus ~259ms of jitter.
 const SPECTATOR_LIMIT = {rate: 1000 / (1000 / 30 - 1), burst: 8};
 const BAN_MS = 60 * 60 * 1000;
@@ -98,12 +99,12 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     }, ROSTER_INTERVAL_MS);
     onChange();
   }
-  function take(bucket, {rate, burst}) {
+  function take(bucket, {rate, burst}, cost = 1) {
     const time = now();
     bucket.tokens = Math.min(burst, bucket.tokens + Math.max(0, time - bucket.at) * rate / 1000);
     bucket.at = time;
-    if (bucket.tokens < 1) return false;
-    bucket.tokens--;
+    if (bucket.tokens < cost) return false;
+    bucket.tokens -= cost;
     return true;
   }
   // count is how many retained saves follow directly, so a joiner can apply them as one batch.
@@ -147,7 +148,8 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
   }
   function addPaint(client, message) {
     const owner = client.owner;
-    if (message.mapId !== state.mapId || message.epoch !== state.epoch || !take(owner.paintBucket, PAINT_LIMIT)) return;
+    if (message.mapId !== state.mapId || message.epoch !== state.epoch || !take(owner.paintBucket, PAINT_LIMIT)
+      || !take(owner.dotBucket, PAINT_DOTS, message.dots.length)) return;
     const dots = message.dots.slice(0, acceptedPaint(owner.paint.length, paintCount(), message.dots.length));
     if (!dots.length) return;
     owner.paint = appendPaint(owner.paint, dots);
@@ -417,7 +419,8 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
           erasePaintAt(client, message);
           break;
         case 'paint-clear':
-          if (message.mapId === state.mapId && message.epoch === state.epoch) clearPaint(client.host ? null : client.owner);
+          // Only the host can clear everyone's paint.
+          if (message.mapId === state.mapId && message.epoch === state.epoch) clearPaint(message.all && client.host ? null : client.owner);
           break;
         case 'ping':
           send(client, 'pong');
@@ -531,7 +534,8 @@ export function createRoomHost({roomId, mapId, maps = [{id: mapId, title: mapId}
     let owner = owners.get(hello.browserId);
     if (!owner) {
       owner = {id: crypto.randomUUID(), entries: [], bucket: {tokens: SAVELOC_LIMIT.burst, at: now()},
-        paint: [], paintBucket: {tokens: PAINT_LIMIT.burst, at: now()}, eraseBucket: {tokens: ERASE_LIMIT.burst, at: now()}};
+        paint: [], paintBucket: {tokens: PAINT_LIMIT.burst, at: now()}, dotBucket: {tokens: PAINT_DOTS.burst, at: now()},
+        eraseBucket: {tokens: ERASE_LIMIT.burst, at: now()}};
       owners.set(hello.browserId, owner);
     }
     const client = {socket, host, owner, browserId: hello.browserId, open: false, sequence: null, target: null, request: 0, watchers: new Set(),

@@ -2,7 +2,7 @@
 // rebroadcasts every change; everyone applies the same rules, so all copies match.
 // A dot on the wire is [x, y, z, nx, ny, nz, size, color].
 export const MAX_PAINT_BATCH = 32, MAX_OWNER_PAINT = 600, MAX_ROOM_PAINT = 4000, MAX_ERASE_RADIUS = 64;
-const FLUSH_MS = 250, ERASE_MS = 125, MAX_QUEUE = 128;
+const FLUSH_MS = 50, ERASE_MS = 125, MAX_QUEUE = 128, PENDING_MS = 3000;
 
 const finite = (value, max) => Number.isFinite(value) && Math.abs(value) <= max;
 export const isPaintDot = dot => Array.isArray(dot) && dot.length === 8
@@ -46,60 +46,122 @@ export const roundRow = row => [round(row[0]), round(row[1]), round(row[2]), rou
 // One room connection's view of the paint: the room map's dots, and what this player sends.
 // rows holds every owner's dots in arrival order, so new paint only ever appends;
 // generation changes whenever anything else does, so the renderer knows to redraw all.
+//
+// Your own new dots show at once, before the host confirms them: they sit in
+// `pending` after the confirmed rows, and the host's copy takes their place
+// when it arrives, normally without moving anything on screen.
 export function createRoomPaint({send, invalid, timers = globalThis, now = Date.now}) {
   let rows = [], rowOwners = [];
   const counts = new Map();
-  let state = null, ownerId = null, closed = false, generation = 0;
-  let queue = [], flushTimer = null, lastErase = -Infinity;
+  let state = null, ownerId = null, closed = false, generation = 0, view = null;
+  // pending: your dots not yet confirmed, oldest first. The first `sent` are
+  // with the host in `batches`; an entry erased meanwhile is marked gone.
+  let pending = [], sent = 0, batches = [];
+  let flushTimer = null, lastFlush = -Infinity, lastErase = -Infinity;
+  const redraw = () => { generation++; view = null; };
   function keep(test) {
     const nextRows = [], nextOwners = [];
     for (let i = 0; i < rows.length; i++) if (test(rows[i], rowOwners[i])) { nextRows.push(rows[i]); nextOwners.push(rowOwners[i]); }
     rows = nextRows; rowOwners = nextOwners;
     counts.clear();
     for (const owner of rowOwners) counts.set(owner, (counts.get(owner) ?? 0) + 1);
-    generation++;
+    redraw();
   }
   function flush() {
     flushTimer = null;
-    if (closed || !state || !queue.length) return;
-    send({type: 'paint-add', mapId: state.mapId, epoch: state.epoch, dots: queue.splice(0, MAX_PAINT_BATCH)});
-    if (queue.length) flushTimer = timers.setTimeout(flush, FLUSH_MS);
+    if (closed || !state || sent >= pending.length) return;
+    const count = Math.min(MAX_PAINT_BATCH, pending.length - sent);
+    send({type: 'paint-add', mapId: state.mapId, epoch: state.epoch, dots: pending.slice(sent, sent + count).map(entry => entry.row)});
+    batches.push({count, at: now()});
+    sent += count;
+    lastFlush = now();
+    schedule();
+  }
+  // The first dot of a stroke goes straight away; the rest share a message every FLUSH_MS.
+  function schedule() {
+    if (flushTimer !== null || sent >= pending.length) return;
+    const wait = lastFlush + FLUSH_MS - now();
+    if (wait <= 0) flush();
+    else flushTimer = timers.setTimeout(flush, wait);
+  }
+  // A batch the host never echoed (refused, or lost) stops showing after a while.
+  function expire() {
+    let dropped = 0;
+    while (batches.length && now() - batches[0].at > PENDING_MS) dropped += batches.shift().count;
+    if (!dropped) return;
+    pending.splice(0, dropped);
+    sent -= dropped;
+    redraw();
   }
   function reset() {
-    if (rows.length) generation++;
+    if (rows.length || pending.length) redraw();
     rows = []; rowOwners = [];
     counts.clear();
     ownerId = null;
-    queue = [];
+    pending = []; sent = 0; batches = [];
     timers.clearTimeout(flushTimer);
     flushTimer = null;
   }
+  // Confirmed dots always match the host's. Your own normally replace the same
+  // pending dots in the same place, so nothing on screen moves.
+  function confirm(owner, dots) {
+    if (owner === ownerId && batches.length) {
+      const batch = batches.shift(), mine = pending.splice(0, batch.count);
+      sent -= batch.count;
+      // A dot you erased on its way comes back until the host's erase, right behind it.
+      if (dots.length !== batch.count || mine.some(entry => entry.gone)) redraw();
+    } else if (pending.length) redraw();
+    for (const dot of dots) { rows.push(dot); rowOwners.push(owner); }
+    view = null;
+    return dots.length;
+  }
+  const ownPending = () => { let count = 0; for (const entry of pending) if (!entry.gone) count++; return count; };
   return {
     get mapId() { return state?.mapId ?? null; },
-    get rows() { return rows; },
+    get rows() {
+      expire();
+      if (!pending.length) return rows;
+      view ??= rows.concat(pending.filter(entry => !entry.gone).map(entry => entry.row));
+      return view;
+    },
     get generation() { return generation; },
     get ready() { return !closed && !!state && !!ownerId; },
+    get owner() { return ownerId; },
     add(row) {
-      if (!this.ready) return false;
-      if (queue.length < MAX_QUEUE) queue.push(roundRow(row));
-      flushTimer ??= timers.setTimeout(flush, queue.length >= MAX_PAINT_BATCH ? 0 : FLUSH_MS);
+      if (!this.ready || pending.length - sent >= MAX_QUEUE) return false;
+      pending.push({row: roundRow(row), gone: false});
+      view = null;
+      schedule();
       return true;
     },
-    // Only sent when one of your own dots is in reach, since that's all the host would erase.
+    // Your own dots in reach go at once; the host is only asked when there are some.
     erase(point, radius) {
-      if (!this.ready || now() - lastErase < ERASE_MS || !counts.get(ownerId)) return;
+      if (!this.ready || now() - lastErase < ERASE_MS) return;
       const at = [round(point.x), round(point.y), round(point.z)], reach = Math.min(MAX_ERASE_RADIUS, radius);
-      let mine = false;
-      for (let i = 0; i < rows.length && !mine; i++) mine = rowOwners[i] === ownerId && touches(rows[i], at[0], at[1], at[2], reach);
-      if (!mine) return;
+      let unsent = false, inFlight = false, confirmed = false;
+      for (let i = pending.length - 1; i >= 0; i--) {
+        const entry = pending[i];
+        if (entry.gone || !touches(entry.row, at[0], at[1], at[2], reach)) continue;
+        if (i >= sent) { pending.splice(i, 1); unsent = true; } else { entry.gone = true; inFlight = true; }
+      }
+      for (let i = 0; i < rows.length && !confirmed; i++) confirmed = rowOwners[i] === ownerId && touches(rows[i], at[0], at[1], at[2], reach);
+      if (confirmed) keep((dot, by) => by !== ownerId || !touches(dot, at[0], at[1], at[2], reach));
+      else if (unsent || inFlight) redraw();
+      if (!confirmed && !inFlight) return;
       lastErase = now();
       send({type: 'paint-erase', mapId: state.mapId, epoch: state.epoch, point: at, radius: reach});
     },
-    // The host clears the whole room; anyone else clears their own.
-    clear() {
-      if (this.ready) send({type: 'paint-clear', mapId: state.mapId, epoch: state.epoch});
+    // Removes your own paint, or as host everyone's.
+    clear(all = false) {
+      if (!this.ready) return;
+      for (const entry of pending) entry.gone = true;
+      pending.splice(sent);
+      if (all) { rows = []; rowOwners = []; counts.clear(); redraw(); }
+      else if (counts.get(ownerId)) keep((_, by) => by !== ownerId);
+      else redraw();
+      send({type: 'paint-clear', mapId: state.mapId, epoch: state.epoch, ...(all ? {all: true} : {})});
     },
-    ownCount() { return counts.get(ownerId) ?? 0; },
+    ownCount() { return (counts.get(ownerId) ?? 0) + ownPending(); },
     state(next) {
       if (closed || state && (next.epoch < state.epoch || next.epoch === state.epoch && next.mapId === state.mapId)) return;
       state = {mapId: next.mapId, epoch: next.epoch};
@@ -114,8 +176,7 @@ export function createRoomPaint({send, invalid, timers = globalThis, now = Date.
       }
       const owner = message.ownerId;
       if (message.type === 'paint-add') {
-        for (const dot of message.dots) { rows.push(dot); rowOwners.push(owner); }
-        const count = (counts.get(owner) ?? 0) + message.dots.length;
+        const count = (counts.get(owner) ?? 0) + confirm(owner, message.dots);
         counts.set(owner, count);
         // Past their cap an owner's oldest dots go, as on the host.
         if (count > MAX_OWNER_PAINT) {
@@ -135,7 +196,7 @@ export function createRoomPaint({send, invalid, timers = globalThis, now = Date.
           if (!rows.length) return;
           rows = []; rowOwners = [];
           counts.clear();
-          generation++;
+          redraw();
         } else if (counts.get(owner)) keep((_, by) => by !== owner);
       }
     },

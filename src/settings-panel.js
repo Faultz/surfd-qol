@@ -159,6 +159,12 @@ export const panelMarkup = `
         ${toggle('nullAD', 'Left / Right', 'Uses your movement bindings in Surfd’s settings.')}
         ${toggle('nullWSpace', 'Forward / Jump', 'Uses your bindings, including extra keys. Latest press wins; release it to resume the other action.')}
       </div>
+      <h3>Noclip</h3>
+      <div class="group">
+        ${toggle('noclip', 'Noclip', 'Press the noclip key to fly through walls, like KSF’s noclip. It puts you in practice first, so the run never counts, and leaves you in practice where you stop.')}
+        <div class="row sub"><span class="row-text"><span class="row-label" id="noclip-key-label">Noclip key</span><span class="hint" id="noclip-key-help" role="status"></span></span><button id="noclip-key" class="keycap" type="button" data-capture="noclipKey" data-gate="noclip" data-help="noclip-key-help" data-name="noclip" aria-labelledby="noclip-key-label noclip-key" aria-describedby="noclip-key-help"></button></div>
+        ${range('noclipSpeed', 'Fly speed', 100, 3000, 50, 'Your movement keys fly where you look; jump rises and crouch sinks.')}
+      </div>
       <div id="strafe-preview-settings">
         <h3>Strafe preview</h3>
         <div class="group">
@@ -175,8 +181,8 @@ export const panelMarkup = `
       </div>
       <h3>Keys</h3>
       <div class="group">
-        <div class="row"><span class="row-text"><span class="row-label" id="paint-key-label">Paint</span><span class="hint" id="paint-key-help" role="status"></span></span><button id="paint-key" class="keycap" type="button" data-capture="paintKey" aria-labelledby="paint-key-label paint-key" aria-describedby="paint-key-help"></button></div>
-        <div class="row"><span class="row-text"><span class="row-label" id="paint-erase-label">Erase</span><span class="hint" id="paint-erase-help" role="status"></span></span><button id="paint-erase-key" class="keycap" type="button" data-capture="paintEraseKey" aria-labelledby="paint-erase-label paint-erase-key" aria-describedby="paint-erase-help"></button></div>
+        <div class="row"><span class="row-text"><span class="row-label" id="paint-key-label">Paint</span><span class="hint" id="paint-key-help" role="status"></span></span><button id="paint-key" class="keycap" type="button" data-capture="paintKey" data-gate="paint" data-help="paint-key-help" data-name="the paint key" aria-labelledby="paint-key-label paint-key" aria-describedby="paint-key-help"></button></div>
+        <div class="row"><span class="row-text"><span class="row-label" id="paint-erase-label">Erase</span><span class="hint" id="paint-erase-help" role="status"></span></span><button id="paint-erase-key" class="keycap" type="button" data-capture="paintEraseKey" data-gate="paint" data-help="paint-erase-help" data-name="the erase key" aria-labelledby="paint-erase-label paint-erase-key" aria-describedby="paint-erase-help"></button></div>
       </div>
       <h3>Look</h3>
       <div class="group">
@@ -185,11 +191,12 @@ export const panelMarkup = `
       </div>
       <h3>Private rooms</h3>
       <div class="group">
-        ${toggle('paintShowRoom', 'Show room paint', 'See everyone’s paint in a private room without painting yourself. Always shown while World paint is on. It clears when the map changes or the room closes.')}
+        ${toggle('paintShowRoom', 'Show room paint', 'Everyone’s paint in a private room, yours included. Off hides it all. Room paint clears when the map changes or the room closes.')}
       </div>
       <h3>This map</h3>
       <div class="group">
-        <div class="actions"><span class="note" id="paint-note" role="status"></span><button id="paint-clear" class="ghost" type="button">Clear this map</button></div>
+        <div class="actions"><span class="note" id="paint-note" role="status"></span>
+          <span class="clear-buttons"><button id="paint-clear" class="ghost" type="button">Clear this map</button><button id="paint-clear-all" class="ghost" type="button" hidden>Remove all paint</button></span></div>
       </div>
     </section>
 
@@ -291,7 +298,7 @@ export function historyRule(settings) {
 
 const PAINT_KEY_HELP = 'Click, then press a key. Esc cancels.';
 
-export function createSettingsPanel({root, settings, onSettings, onResetColors, onResetLayout, bindings, host, onChange, onOpen, storage, strafePreview = null, paint = null}) {
+export function createSettingsPanel({root, settings, onSettings, onResetColors, onResetLayout, bindings, host, onChange, onOpen, storage, strafePreview = null, paint = null, keyConflict = null}) {
   const node = id => root.getElementById(id);
   const panel = node('panel'), opener = node('open'), close = node('close'), keyButton = node('key'), keyHelp = node('key-help');
   const body = panel.querySelector('.body');
@@ -303,13 +310,13 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
   const preview = createHudView(previewElement);
   let capturing = false, available = false;
   const paintCaps = [...panel.querySelectorAll('[data-capture]')];
-  const paintHelp = {paintKey: node('paint-key-help'), paintEraseKey: node('paint-erase-help')};
   const paintProblem = {};
   const write = (element, value) => { if (element.textContent !== value) element.textContent = value; };
 
   function format(key, value) {
     if (key === 'strafeLookbackSeconds') return `${value.toFixed(2)} s`;
-    if (key === 'paintSize') return `${value} u`;    if (key === 'y' || key === 'scale' || key === 'opacity') return `${Math.round(value * (key === 'y' ? 1 : 100))}%`;
+    if (key === 'paintSize') return `${value} u`;
+    if (key === 'noclipSpeed') return `${value} u/s`;    if (key === 'y' || key === 'scale' || key === 'opacity') return `${Math.round(value * (key === 'y' ? 1 : 100))}%`;
     return String(value);
   }
   function sync() {
@@ -391,28 +398,34 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
       control.closest('.row')?.classList.toggle('off', disabled);
     }
   }
-  // Paint keys: each keycap shows its key, or a warning when Surfd or the other paint key already uses it.
+  // Paint and noclip keys: each keycap shows its key, or a warning when Surfd or another of these keys already uses it.
   function syncPaint() {
     const off = settings.paint !== true;
     for (const cap of paintCaps) {
-      const key = cap.dataset.capture, code = settings[key];
+      const key = cap.dataset.capture, code = settings[key], gated = settings[cap.dataset.gate] !== true;
       if (capturing !== key) write(cap, keyName(code));
-      cap.disabled = off;
-      cap.closest('.row').classList.toggle('off', off);
-      const other = key === 'paintKey' ? settings.paintEraseKey : settings.paintKey;
-      const action = paint?.conflict?.(code);
+      cap.disabled = gated;
+      cap.closest('.row').classList.toggle('off', gated);
+      const twin = paintCaps.find(other => other !== cap && settings[other.dataset.capture] === code);
+      const action = keyConflict?.(code);
       const problem = paintProblem[key] ?? (capturing === key ? 'Press any key. Esc cancels.'
-        : code === other ? 'Same key as the other paint key.'
+        : twin ? `Same key as ${twin.dataset.name}.`
           : action ? `Also ${action} in Surfd; both happen.` : PAINT_KEY_HELP);
-      write(paintHelp[key], problem);
-      paintHelp[key].classList.toggle('warn', problem !== PAINT_KEY_HELP && capturing !== key);
+      const help = node(cap.dataset.help);
+      write(help, problem);
+      help.classList.toggle('warn', problem !== PAINT_KEY_HELP && capturing !== key);
     }
     setDisabled('paintColor', off);
-    setDisabled('paintSize', off);    const clear = node('paint-clear'), count = paint?.count ?? 0, room = paint?.room === true, host = paint?.host === true;
+    setDisabled('paintSize', off);
+    setDisabled('noclipSpeed', settings.noclip !== true);
+    const clear = node('paint-clear'), clearAll = node('paint-clear-all');
+    const count = paint?.count ?? 0, room = paint?.room === true, host = paint?.host === true;
     const dots = value => `${value} dot${value === 1 ? '' : 's'}`;
     clear.hidden = !paint;
-    clear.disabled = room && !host ? !paint.ownCount : !count;
-    write(clear, room ? host ? 'Clear room paint' : 'Clear my paint' : 'Clear this map');
+    clear.disabled = room ? !paint.ownCount : !count;
+    write(clear, room ? 'Remove my paint' : 'Clear this map');
+    clearAll.hidden = !room || !host;
+    clearAll.disabled = !count;
     write(node('paint-note'), !paint ? '' : room ? count ? `${dots(count)} in this room` : 'Nothing painted in this room'
       : count ? `${dots(count)} on this map` : 'Nothing painted on this map');
   }
@@ -425,6 +438,7 @@ export function createSettingsPanel({root, settings, onSettings, onResetColors, 
     syncPaint();
   });
   node('paint-clear').addEventListener('click', () => { paint?.clear(); syncPaint(); });
+  node('paint-clear-all').addEventListener('click', () => { paint?.clearAll(); syncPaint(); });
   function keyName(code) {
     const value = code || 'Space';
     return value.replace(/^Key(?=[A-Z]$)/, '').replace(/^Digit(?=\d$)/, '').replace(/^Arrow/, '').replace(/(Left|Right)$/, ' $1');

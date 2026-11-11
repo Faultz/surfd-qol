@@ -175,7 +175,7 @@ function borrowThree(renderer) {
   } finally { ghost.dispose?.(); }
 }
 
-const LOCAL = 'local';
+const LOCAL = 'local', HIDDEN = 'hidden', NOTHING = Object.freeze([]);
 
 export function createPaint({getAdapter, settings, getRoom = null, isHost = null, storage = globalThis.localStorage}) {
   let map = null, mapObject = null, dots = [], generation = 0, saveTimer = 0, destroyed = false;
@@ -260,9 +260,10 @@ export function createPaint({getAdapter, settings, getRoom = null, isHost = null
         if (key !== map) { save(); map = key; dots = load(key); generation++; }
       }
       const room = roomFor(session);
-      // Painting in a room always shows it, so you never paint blind.
-      const visible = settings.paintShowRoom === true || settings.paint === true;
-      const wanted = room ? visible : settings.paint === true;
+      // In a room, Show room paint alone decides whether any paint is drawn, yours included.
+      const visible = settings.paintShowRoom === true;
+      // Painting still needs the renderer's camera to aim, even with paint hidden.
+      const wanted = settings.paint === true || !!room && visible;
       const renderer = wanted && map ? adapter?.cinema?.renderer?.() ?? null : null;
       if (renderer !== attached) {
         detach();
@@ -277,7 +278,8 @@ export function createPaint({getAdapter, settings, getRoom = null, isHost = null
       const input = adapter.getInput?.();
       if (!input?.locked || input.suppressed || settings.paint !== true) { held.clear(); last = null; }
       else if (held.size) stroke(session, room);
-      if (room) paintMesh.sync(room.rows, room, room.generation);
+      if (room && visible) paintMesh.sync(room.rows, room, room.generation);
+      else if (room) paintMesh.sync(NOTHING, HIDDEN, 0);
       else paintMesh.sync(dots, LOCAL, generation);
     } catch (error) {
       console.warn('[Surfd QoL] World paint stopped:', error);
@@ -317,17 +319,17 @@ export function createPaint({getAdapter, settings, getRoom = null, isHost = null
     get count() { const room = current(); return room ? room.rows.length : dots.length; },
     get ownCount() { const room = current(); return room ? room.ownCount() : dots.length; },
     get map() { return map; },
-    // Which Surfd action already uses a key, so the panel can warn about it.
-    conflict(code) {
-      try {
-        const bound = getAdapter()?.getBindings?.() ?? {};
-        return Object.entries(bound).find(([, codes]) => Array.isArray(codes) && codes.includes(code))?.[0] ?? null;
-      } catch { return null; }
-    },
+    // Alone, both clear this map. In a room, clear() removes your own paint and
+    // clearAll() everyone's, which only the host can do.
     clear() {
       const room = current();
-      if (room) room.clear();
+      if (room) room.clear(false);
       else { dots = []; changed(); save(); }
+    },
+    clearAll() {
+      const room = current();
+      if (room && isHost?.() === true) room.clear(true);
+      else if (!room) this.clear();
     },
     destroy,
   };

@@ -307,7 +307,8 @@ export function decodeControl(text) {
         requireValid(isPaintPoint(message.point) && isEraseRadius(message.radius), 'Invalid paint erase');
         return {...envelope, point: message.point.slice(), radius: message.radius};
       }
-      return envelope;
+      requireValid(message.all === undefined || typeof message.all === 'boolean', 'Invalid paint clear');
+      return {...envelope, all: message.all === true};
     }
     case 'chat':
       requireValid(typeof message.text === 'string' && message.text.trim().length > 0, 'Invalid chat');

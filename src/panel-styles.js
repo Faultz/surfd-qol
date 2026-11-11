@@ -109,6 +109,7 @@ h3{display:flex;align-items:center;gap:8px;margin:22px 0 2px;font-size:12px;font
 .keycap:hover{border-color:rgba(255,255,255,.24)}
 .keycap.listening{border-color:var(--accent);color:var(--accent)}
 .keycap:disabled{cursor:default}
+.clear-buttons{flex:none;display:inline-flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}
 .paint-color{flex:none;width:34px;height:34px;padding:0;border:0;border-radius:50%;background:none;cursor:pointer;box-shadow:0 0 0 1px var(--line-2)}
 .paint-color::-webkit-color-swatch-wrapper{padding:0}
 .paint-color::-webkit-color-swatch{border:0;border-radius:50%}

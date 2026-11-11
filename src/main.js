@@ -18,6 +18,7 @@ import { createCinema } from './cinema.js';
 import {createMapPreparation} from './map-preparation.js';
 import {createEntryTiming} from './entry-timing.js';
 import {createPaint} from './paint.js';
+import {createNoclip} from './noclip.js';
 
 const settings = { ...defaults };
 const applySettings = patch => applySettingsTo(settings, patch);
@@ -100,6 +101,7 @@ const mapPreparation = createMapPreparation();
 const entryTiming = createEntryTiming();
 const paint = createPaint({getAdapter: () => api.adapter, settings,
   getRoom: () => privateRooms.paint, isHost: () => privateRooms.hostingCurrent});
+const noclip = createNoclip({getAdapter: () => api.adapter, settings});
 let restoreBeginAttempt = null;
 function onSettings(patch) {
   const startWasShown = settings.hud !== false && settings.showStart !== false;
@@ -109,6 +111,7 @@ function onSettings(patch) {
   try { localStorage.setItem(storageKey, JSON.stringify(settings)); } catch { /* private/storage-limited mode */ }
   if (Object.keys(patch ?? {}).some(key => storageLimitKeys.includes(key))) history.prune();
   if (patch?.keepHistory === false) history.discard();
+  if (patch?.noclip === false) noclip.stop();
   bindings.update();
 }
 function fail(error) {
@@ -203,6 +206,8 @@ const api = {
     // Unwrap replay control first: it sits over the observer's restorePractice
     // wrapper, which only unwraps while it is still outermost.
     replayControl.destroy();
+    // Noclip's step wrapper sits over the observer's, so it goes first.
+    noclip.destroy();
     observer?.destroy();
     hud?.destroy();
     rampReference.destroy();

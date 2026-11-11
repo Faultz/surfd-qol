@@ -93,6 +93,13 @@ export function mountHud({getState, getView, getMetrics, getSession, getReferenc
   }
   const panel = createSettingsPanel({
     root, host, settings, bindings, onSettings, strafePreview, paint,
+    // Which Surfd action already uses a key, so paint and noclip keys can warn about it.
+    keyConflict(code) {
+      try {
+        const bound = getAdapter?.()?.getBindings?.() ?? {};
+        return Object.entries(bound).find(([, codes]) => Array.isArray(codes) && codes.includes(code))?.[0] ?? null;
+      } catch { return null; }
+    },
     onResetColors,
     onResetLayout: () => onSettings({y: defaults.y, scale: defaults.scale, opacity: defaults.opacity}),
     onChange() { syncSettings(); render(); },
